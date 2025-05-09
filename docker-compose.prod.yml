@@ -1,0 +1,32 @@
+
+services:
+  etcd:
+    image: bitnami/etcd:latest
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcd_data:/bitnami/etcd
+    networks:
+      - vpn-network
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ETCD_HOST=etcd
+      - ETCD_PORT=2379
+    depends_on:
+      - etcd
+    networks:
+      - vpn-network
+
+networks:
+  vpn-network:
+    driver: bridge
+
+volumes:
+  etcd_data:
+    driver: local
