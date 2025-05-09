@@ -14,3 +14,6 @@ sudo chmod +x runner.sh && ./runner.sh
 - run only etcd
 ``` bash
 ./runner.sh -e
+
+
+- [] add transactions
