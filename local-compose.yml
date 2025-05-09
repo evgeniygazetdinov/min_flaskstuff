@@ -3,6 +3,11 @@ services:
     image: bitnami/etcd:latest
     environment:
       - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_LOGGER=zap
+      - ETCD_LOG_LEVEL=error  # Изменить на debug для более подробных логов
+      - ETCD_ENABLE_V2=true
     ports:
       - "2379:2379"
       - "2380:2380"

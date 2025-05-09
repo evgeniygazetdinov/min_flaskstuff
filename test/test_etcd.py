@@ -81,5 +81,6 @@ def test_list_configs(etcd_client):
     for config_id, config_data in configs.items():
         etcd_client.create_config(config_id, config_data)
     
+
     stored_configs = etcd_client.list_configs()
     assert stored_configs == configs

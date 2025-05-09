@@ -8,8 +8,8 @@ etcd_client = EtcdClient()
 @app.post("/vpn/")
 def create_vpn_config(config_request: VPNConfigRequest):
     try:
-        etcd_client.create_config(config_request.config_id, config_request.config_data)
-        return {"message": "VPN configuration created", "config_id": config_request.config_id}
+        config_id = etcd_client.create_config(config_request.config_data)
+        return {"message": "VPN configuration created", "config_id": config_id}
     except HTTPException as e:
         raise e
     except Exception as e:
