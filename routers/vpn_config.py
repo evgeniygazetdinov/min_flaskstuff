@@ -1,6 +1,6 @@
-from http.client import HTTPException
 
-from fastapi import APIRouter
+
+from fastapi import APIRouter, HTTPException
 
 from models.vpn_config import VPNConfigRequest
 from etcd_client import EtcdClient
