@@ -1,4 +1,4 @@
-import etcd
+import etcd3
 import json
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
@@ -8,15 +8,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class EtcdClient:
     def __init__(self, host='localhost', port=2379):
-        self.client = etcd.Client(host=host, port=port)
+        self.client = etcd3.client(host=host, port=port)
         self.base_key = '/vpn/configs/'
         self.users_key = '/vpn/users/'
         self.counter_key = '/vpn/counter'
         # Initialize counter if it doesn't exist
-        try:
-            self.client.read(self.counter_key)
-        except etcd.EtcdKeyNotFound:
-            self.client.write(self.counter_key, '0')
+        if not self.client.get(self.counter_key)[0]:
+            self.client.put(self.counter_key, b'0')
 
     def _get_full_key(self, config_id: int) -> str:
         return f"{self.base_key}{config_id}"
@@ -26,103 +24,89 @@ class EtcdClient:
 
     def _get_next_id(self) -> int:
         try:
-            counter = self.client.read(self.counter_key)
-            next_id = int(counter.value) + 1
-            self.client.write(self.counter_key, str(next_id))
+            counter_value = self.client.get(self.counter_key)[0]
+            next_id = int(counter_value.decode('utf-8')) + 1
+            self.client.put(self.counter_key, str(next_id).encode('utf-8'))
             return next_id
-        except etcd.EtcdConnectionFailed as e:
-            raise HTTPException(status_code=503, detail=f"Failed to connect to etcd {e}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=503, detail=f"Failed to get next ID: {str(e)}")
 
     def create_config(self, config_data: Dict[str, Any]) -> int:
         try:
             config_id = self._get_next_id()
             full_key = self._get_full_key(config_id)
-            self.client.write(full_key, json.dumps(config_data))
+            self.client.put(full_key, json.dumps(config_data).encode('utf-8'))
             return config_id
-        except etcd.EtcdConnectionFailed as e:
-            raise HTTPException(status_code=503, detail=f"Failed to connect to etcd {e}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=503, detail=f"Failed to create config: {str(e)}")
 
     def get_config(self, config_id: int) -> Optional[Dict[str, Any]]:
         try:
             full_key = self._get_full_key(config_id)
-            result = self.client.read(full_key)
-            return json.loads(result.value)
-        except etcd.EtcdKeyNotFound:
-            return None
-        except etcd.EtcdConnectionFailed:
-            raise HTTPException(status_code=503, detail="Failed to connect to etcd")
+            result = self.client.get(full_key)[0]
+            if result is None:
+                return None
+            return json.loads(result.decode('utf-8'))
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed to get config: {str(e)}")
 
     def update_config(self, config_id: int, config_data: Dict[str, Any]) -> bool:
         try:
             full_key = self._get_full_key(config_id)
-            try:
-                self.client.read(full_key)
-                self.client.write(full_key, json.dumps(config_data))
-                return True
-            except etcd.EtcdKeyNotFound:
+            if self.client.get(full_key)[0] is None:
                 return False
-        except etcd.EtcdConnectionFailed:
-            raise HTTPException(status_code=503, detail="Failed to connect to etcd")
+            self.client.put(full_key, json.dumps(config_data).encode('utf-8'))
+            return True
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed to update config: {str(e)}")
 
     def delete_config(self, config_id: int) -> bool:
         try:
             full_key = self._get_full_key(config_id)
-            try:
-                self.client.delete(full_key)
-                return True
-            except etcd.EtcdKeyNotFound:
+            if self.client.get(full_key)[0] is None:
                 return False
-        except etcd.EtcdConnectionFailed:
-            raise HTTPException(status_code=503, detail="Failed to connect to etcd")
+            self.client.delete(full_key)
+            return True
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed to delete config: {str(e)}")
 
     def list_configs(self) -> Dict[int, Dict[str, Any]]:
         try:
             configs = {}
-            try:
-                result = self.client.read(self.base_key, recursive=True)
-                for child in result.children:
-                    config_id = int(child.key.split('/')[-1])
-                    configs[config_id] = json.loads(child.value)
-            except etcd.EtcdKeyNotFound:
-                pass
+            for item in self.client.get_prefix(self.base_key):
+                key = item[1].key.decode('utf-8')
+                config_id = int(key.split('/')[-1])
+                configs[config_id] = json.loads(item[0].decode('utf-8'))
             return configs
-        except etcd.EtcdConnectionFailed:
-            raise HTTPException(status_code=503, detail="Failed to connect to etcd")
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed to list configs: {str(e)}")
 
     def create_user(self, username: str, password: str, vpn_config: Optional[Dict[str, Any]] = None) -> None:
         try:
             user_key = self._get_user_key(username)
-            try:
-                self.client.read(user_key)
+            if self.client.get(user_key)[0] is not None:
                 raise HTTPException(status_code=400, detail="User already exists")
-            except etcd.EtcdKeyNotFound:
-                hashed_password = pwd_context.hash(password)
-                user_data = {
-                    "username": username,
-                    "password": hashed_password,
-                    "vpn_config": vpn_config
-                }
-                self.client.write(user_key, json.dumps(user_data))
-        except etcd.EtcdConnectionFailed as e:
-            raise HTTPException(status_code=503, detail=f"Failed to connect to etcd {e}")
+            
+            user_data = {
+                "username": username,
+                "password": pwd_context.hash(password),
+                "vpn_config": vpn_config
+            }
+            self.client.put(user_key, json.dumps(user_data).encode('utf-8'))
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=503, detail=f"Failed to create user: {str(e)}")
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
         try:
             user_key = self._get_user_key(username)
-            result = self.client.read(user_key)
-            return json.loads(result.value)
-        except etcd.EtcdKeyNotFound:
-            return None
-        except etcd.EtcdConnectionFailed as e:
-            raise HTTPException(status_code=503, detail=f"Failed to connect to etcd {e}")
+            result = self.client.get(user_key)[0]
+            if result is None:
+                return None
+            return json.loads(result.decode('utf-8'))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=503, detail=f"Failed to get user: {str(e)}")
 
     def verify_password(self, username: str, password: str) -> bool:
         user = self.get_user(username)

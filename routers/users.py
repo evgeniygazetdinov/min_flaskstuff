@@ -14,7 +14,6 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 router = APIRouter(prefix="/api/v1/users", tags=["Users"])
 
-
 etcd_client = EtcdClient()
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -46,7 +45,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return user
 
-@router.post("/api/auth")
+@router.post("/auth")
 async def authenticate_user(user_auth: UserAuth):
     if not etcd_client.verify_password(user_auth.username, user_auth.password):
         raise HTTPException(
@@ -61,19 +60,21 @@ async def authenticate_user(user_auth: UserAuth):
         data={"sub": user["username"]}, expires_delta=access_token_expires
     )
     
-    response = {
+    return {
         "access_token": access_token,
         "token_type": "bearer"
     }
 
-    
-    return response
-
-@router.post("/api/users")
+@router.post("/")
 async def create_user(user: User):
-    etcd_client.create_user(user.username, user.password, user.vpn_config)
-    return {"message": "User created successfully"}
+    try:
+        etcd_client.create_user(user.username, user.password, user.vpn_config)
+        return {"message": "User created successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/api/me")
+@router.get("/me")
 async def read_users_me(current_user = Depends(get_current_user)):
     return current_user
