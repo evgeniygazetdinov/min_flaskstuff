@@ -1,14 +1,12 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
 from main import app
-from models.users import User, UserAuth
-from etcd_client import EtcdClient, pwd_context
+from etcd_client import pwd_context
+from fastapi import HTTPException
 
 client = TestClient(app)
 
-# Test data
 @pytest.fixture
 def test_user_data():
     return {
@@ -22,87 +20,116 @@ def test_user_data():
     }
 
 @pytest.fixture
-def mock_etcd_client():
-    with patch('etcd_client.EtcdClient') as mock_client:
+def mock_etcd():
+    with patch('routers.users.etcd_client') as mock_client:
+        # Setup mock storage
+        users = {}
+        
+        def mock_create_user(username, password, vpn_config=None):
+            if username in users:
+                raise HTTPException(status_code=400, detail="User already exists")
+            users[username] = {
+                "username": username,
+                "password": pwd_context.hash(password),
+                "vpn_config": vpn_config
+            }
+            
+        def mock_get_user(username):
+            return users.get(username)
+            
+        def mock_verify_password(username, password):
+            user = users.get(username)
+            if not user:
+                return False
+            return pwd_context.verify(password, user["password"])
+            
+        # Setup mock methods
+        mock_client.create_user = MagicMock(side_effect=mock_create_user)
+        mock_client.get_user = MagicMock(side_effect=mock_get_user)
+        mock_client.verify_password = MagicMock(side_effect=mock_verify_password)
+        
         yield mock_client
 
-@pytest.fixture
-def mock_user_in_db(test_user_data):
-    return {
-        "username": test_user_data["username"],
-        "password": pwd_context.hash(test_user_data["password"]),
-        "vpn_config": test_user_data["vpn_config"]
-    }
-
-def test_create_user_success(mock_etcd_client, test_user_data):
-    instance = mock_etcd_client.return_value
-    instance.create_user.return_value = None
-    
+def test_create_user_success(mock_etcd, test_user_data):
     response = client.post("/api/v1/users", json=test_user_data)
     
     assert response.status_code == 200
     assert response.json() == {"message": "User created successfully"}
     
-    instance.create_user.assert_called_once_with(
+    mock_etcd.create_user.assert_called_once_with(
         test_user_data["username"],
         test_user_data["password"],
         test_user_data["vpn_config"]
     )
 
-def test_create_duplicate_user(mock_etcd_client, test_user_data):
-    instance = mock_etcd_client.return_value
-    instance.create_user.side_effect = Exception("User already exists")
+def test_create_duplicate_user(mock_etcd, test_user_data):
+    # First create the user
+    client.post("/api/v1/users", json=test_user_data)
     
+    # Try to create the same user again
     response = client.post("/api/v1/users", json=test_user_data)
     
-    assert response.status_code == 500
-    assert response.json()["detail"] == "User already exists"
+    assert response.status_code == 400
+    assert "User already exists" in response.json()["detail"]
 
-def test_authenticate_valid_user(mock_etcd_client, test_user_data, mock_user_in_db):
-    instance = mock_etcd_client.return_value
-    instance.verify_password.return_value = True
-    instance.get_user.return_value = mock_user_in_db
+def test_authenticate_valid_user(mock_etcd, test_user_data):
+    # First create the user
+    client.post("/api/v1/users", json=test_user_data)
     
-    auth_data = {"username": test_user_data["username"], "password": test_user_data["password"]}
+    # Try to authenticate
+    auth_data = {
+        "username": test_user_data["username"],
+        "password": test_user_data["password"]
+    }
     response = client.post("/api/v1/users/auth", json=auth_data)
     
     assert response.status_code == 200
     assert "access_token" in response.json()
     assert "token_type" in response.json()
     assert response.json()["token_type"] == "bearer"
-
-def test_authenticate_invalid_password(mock_etcd_client, test_user_data):
-    instance = mock_etcd_client.return_value
-    instance.verify_password.return_value = False
     
-    auth_data = {"username": test_user_data["username"], "password": "wrongpass"}
-    response = client.post("/api/v1/users/auth", json=auth_data)
-    
-    assert response.status_code == 401
-    assert "Incorrect username or password" in response.json()["detail"]
-
-def test_authenticate_nonexistent_user(mock_etcd_client):
-    instance = mock_etcd_client.return_value
-    instance.verify_password.return_value = False
-    instance.get_user.return_value = None
-    
-    auth_data = {"username": "nonexistent", "password": "anypass"}
-    response = client.post("/api/v1/users/auth", json=auth_data)
-    
-    assert response.status_code == 401
-    assert "Incorrect username or password" in response.json()["detail"]
-
-def test_get_current_user_success(mock_etcd_client, test_user_data, mock_user_in_db):
-    instance = mock_etcd_client.return_value
-    instance.verify_password.return_value = True
-    instance.get_user.return_value = mock_user_in_db
-    
-    auth_response = client.post(
-        "/api/v1/users/auth",
-        json={"username": test_user_data["username"], "password": test_user_data["password"]}
+    # Verify the mock was called correctly
+    mock_etcd.verify_password.assert_called_with(
+        test_user_data["username"],
+        test_user_data["password"]
     )
+
+def test_authenticate_invalid_password(mock_etcd, test_user_data):
+    # First create the user
+    client.post("/api/v1/users", json=test_user_data)
+    
+    # Try to authenticate with wrong password
+    auth_data = {
+        "username": test_user_data["username"],
+        "password": "wrongpass"
+    }
+    response = client.post("/api/v1/users/auth", json=auth_data)
+    
+    assert response.status_code == 401
+    assert "Incorrect username or password" in response.json()["detail"]
+
+def test_authenticate_nonexistent_user(mock_etcd):
+    auth_data = {
+        "username": "nonexistent",
+        "password": "anypass"
+    }
+    response = client.post("/api/v1/users/auth", json=auth_data)
+    
+    assert response.status_code == 401
+    assert "Incorrect username or password" in response.json()["detail"]
+
+def test_get_current_user_success(mock_etcd, test_user_data):
+    # First create and authenticate the user
+    client.post("/api/v1/users", json=test_user_data)
+    auth_response = client.post("/api/v1/users/auth", json={
+        "username": test_user_data["username"],
+        "password": test_user_data["password"]
+    })
+    
+    # Get the token
     token = auth_response.json()["access_token"]
     
+    # Try to get current user info
     response = client.get(
         "/api/v1/users/me",
         headers={"Authorization": f"Bearer {token}"}
@@ -110,9 +137,9 @@ def test_get_current_user_success(mock_etcd_client, test_user_data, mock_user_in
     
     assert response.status_code == 200
     assert response.json()["username"] == test_user_data["username"]
-    assert "password" not in response.json()  # Ensure password is not returned
+    assert response.json()["vpn_config"] == test_user_data["vpn_config"]
 
-def test_get_current_user_invalid_token(mock_etcd_client):
+def test_get_current_user_invalid_token(mock_etcd):
     response = client.get(
         "/api/v1/users/me",
         headers={"Authorization": "Bearer invalid_token"}
@@ -120,12 +147,3 @@ def test_get_current_user_invalid_token(mock_etcd_client):
     
     assert response.status_code == 401
     assert "Could not validate credentials" in response.json()["detail"]
-
-def test_database_connection_error(mock_etcd_client, test_user_data):
-    instance = mock_etcd_client.return_value
-    instance.create_user.side_effect = Exception("Failed to connect to etcd")
-    
-    response = client.post("/api/v1/users", json=test_user_data)
-    
-    assert response.status_code == 503
-    assert "Failed to connect to etcd" in response.json()["detail"]

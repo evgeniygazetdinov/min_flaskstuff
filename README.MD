@@ -15,5 +15,7 @@ sudo chmod +x runner.sh && ./runner.sh
 ``` bash
 ./runner.sh -e
 
-
+current issues (TODO):
 - [] add transactions
+
+- [] separate etcd client into classes
